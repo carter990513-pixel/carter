@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>9x9 輸送帶方塊拼圖</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #fff;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            user-select: none;
+        }
+        #score-board {
+            font-size: 42px;
+            font-weight: 900;
+            margin-bottom: 15px;
+            text-shadow: 3px 3px 6px rgba(0,0,0,0.6);
+            background: linear-gradient(45deg, #ff0055, #fbb034, #00ff66, #00ffff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: rainbow_glow 6s linear infinite;
+        }
+        @keyframes rainbow_glow {
+            0% { filter: hue-rotate(0deg); }
+            100% { filter: hue-rotate(360deg); }
+        }
+        #game-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+        canvas {
+            border: 4px solid #333;
+            background-color: #0d0d0d;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.7);
+            border-radius: 10px;
+        }
+        #workspace {
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            width: 450px;
+            height: 130px;
+            background-color: #22222b;
+            border: 2px dashed #444;
+            border-radius: 10px;
+            padding: 10px;
+        }
+        .dock-slot {
+            width: 120px;
+            height: 120px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #15151c;
+            border-radius: 8px;
+            cursor: grab;
+        }
+        .dock-slot:active {
+            cursor: grabbing;
+        }
+        .controls {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #777;
+            text-align: center;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="score-board">SCORE: 0</div>
+    <div id="game-container">
+        <canvas id="board" width="450" height="450"></canvas>
+        <div id="workspace">
+            <canvas id="dock0" class="dock-slot" width="120" height="120"></canvas>
+            <canvas id="dock1" class="dock-slot" width="120" height="120"></canvas>
+            <canvas id="dock2" class="dock-slot" width="120" height="120"></canvas>
+        </div>
+    </div>
+    <div class="controls">
+        操作方式：用滑鼠拖曳下方方塊到 9x9 棋盤中擺放<br>
+        ⚠️ 規則：每放置一次，全場方塊將會<b>隨機向上或向下挪動 1 格</b>（滾動出邊界的方塊會消失）！
+    </div>
+
+<script>
+const boardCanvas = document.getElementById('board');
+const boardCtx = boardCanvas.getContext('2d');
+const GRID_SIZE = 50; 
+const SIZE = 9; 
+
+let score = 0;
+let arena = Array.from({length: SIZE}, () => Array(SIZE).fill(0));
+
+const colors = [
+    null,
+    '#FF3366', '#FF9933', '#FFFF33', '#33FF66', 
+    '#33CCFF', '#9933FF', '#FF33CC', '#00FFCC'
+];
+
+const shapesPool = [
+    { color: 1, matrix: [[1]] },
+    { color: 2, matrix: [[2,2],[2,2]] },
+    { color: 3, matrix: [[3,3,3],[3,3,3],[3,3,3]] },
+    { color: 4, matrix: [[4,4]] },
+    { color: 4, matrix: [[4,4,4]] },
+    { color: 4, matrix: [[4,4,4,4]] },
+    { color: 4, matrix: [[4],[4]] },
+    { color: 4, matrix: [[4],[4],[4]] },
+    { color: 4, matrix: [[4],[4],[4],[4]] },
+    { color: 5, matrix: [[5,0],[5,5]] },
+    { color: 5, matrix: [[0,5],[5,5]] },
+    { color: 5, matrix: [[5,5],[5,0]] },
+    { color: 5, matrix: [[5,5],[0,5]] },
+    { color: 6, matrix: [[6,0,0],[6,6,6]] },
+    { color: 6, matrix: [[0,0,6],[6,6,6]] },
+    { color: 6, matrix: [[6,6,6],[6,0,0]] },
+    { color: 6, matrix: [[6,6,6],[0,0,6]] },
+    { color: 6, matrix: [[6,6],[6,0],[6,0]] },
+    { color: 6, matrix: [[6,6],[0,6],[0,6]] },
+    { color: 6, matrix: [[6,0],[6,0],[6,6]] },
+    { color: 6, matrix: [[0,6],[0,6],[6,6]] }
+];
+
+let dockPieces = [null, null, null];
+const dockCanvases = [
+    document.getElementById('dock0'),
+    document.getElementById('dock1'),
+    document.getElementById('dock2')
+];
+const dockCtxs = dockCanvases.map(c => c.getContext('2d'));
+
+function generateDockPieces() {
+    for (let i = 0; i < 3; i++) {
+        const randIndex = Math.floor(Math.random() * shapesPool.length);
+        const shape = shapesPool[randIndex];
+        dockPieces[i] = {
+            matrix: shape.matrix.map(row => [...row]),
+            color: shape.color
+        };
+        drawDockPiece(i);
+    }
+}
+
+function drawDockPiece(index) {
+    const ctx = dockCtxs[index];
+    const canvas = dockCanvases[index];
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    const piece = dockPieces[index];
+    if (!piece) return;
+
+    const m = piece.matrix;
+    const pSize = 22; 
+    const offsetX = (canvas.width - m[0].length * pSize) / 2;
+    const offsetY = (canvas.height - m.length * pSize) / 2;
+
+    m.forEach((row, y) => {
+        row.forEach((val, x) => {
+            if (val !== 0) {
+                ctx.fillStyle = colors[piece.color];
+                ctx.fillRect(offsetX + x * pSize, offsetY + y * pSize, pSize - 1, pSize - 1);
+            }
+        });
+    });
+}
+
+function drawBoard() {
+    boardCtx.clearRect(0, 0, boardCanvas.width, boardCanvas.height);
+    for (let y = 0; y < SIZE; y++) {
+        for (let x = 0; x < SIZE; x++) {
+            boardCtx.strokeStyle = '#222';
+            boardCtx.strokeRect(x * GRID_SIZE, y * GRID_SIZE, GRID_SIZE, GRID_SIZE);
+            if (arena[y][x] !== 0) {
+                boardCtx.fillStyle = colors[arena[y][x]];
+                boardCtx.fillRect(x * GRID_SIZE + 1, y * GRID_SIZE + 1, GRID_SIZE - 2, GRID_SIZE - 2);
+            }
+        }
+    }
+}
+
+function canPlace(matrix, startX, startY) {
+    for (let y = 0; y < matrix.length; y++) {
+        for (let x = 0; x < matrix[y].length; x++) {
+            if (matrix[y][x] !== 0) {
+                const boardX = startX + x;
+                const boardY = startY + y;
+                if (boardX < 0 || boardX >= SIZE || boardY < 0 || boardY >= SIZE) return false;
+                if (arena[boardY][boardX] !== 0) return false;
+            }
+        }
+    }
+    return true;
+}
+
+function shiftConveyor() {
+    const direction = Math.random() < 0.5 ? 'UP' : 'DOWN';
+    if (direction === 'UP') {
+        for (let y = 0; y < SIZE - 1; y++) {
+            arena[y] = [...arena[y + 1]];
+        }
+        arena[SIZE - 1] = Array(SIZE).fill(0);
+    } else {
+        for (let y = SIZE - 1; y > 0; y--) {
+            arena[y] = [...arena[y - 1]];
+        }
+        arena[0] = Array(SIZE).fill(0);
+    }
+}
+
+function checkLines() {
+    let rowsToRemove = [];
+    let colsToRemove = [];
+
+    for (let y = 0; y < SIZE; y++) {
+        if (arena[y].every(val => val !== 0)) rowsToRemove.push(y);
+    }
+    for (let x = 0; x < SIZE; x++) {
+        let colFilled = true;
+        for (let y = 0; y < SIZE; y++) {
+            if (arena[y][x] === 0) { colFilled = false; break; }
+        }
+        if (colFilled) colsToRemove.push(x);
+    }
+
+    if (rowsToRemove.length > 0 || colsToRemove.length > 0) {
+        let mask = Array.from({length: SIZE}, () => Array(SIZE).fill(0));
+        rowsToRemove.forEach(y => { for(let x=0; x<SIZE; x++) mask[y][x] = 1; });
+        colsToRemove.forEach(x => { for(let y=0; y<SIZE; y++) mask[y][x] = 1; });
+        
+        let totalBlocksRemoved = 0;
+        for(let y=0; y<SIZE; y++) {
+            for(let x=0; x<SIZE; x++) {
+                if(mask[y][x] === 1) totalBlocksRemoved++;
+            }
+        }
+
+        let totalLines = rowsToRemove.length + colsToRemove.length;
+        score += Math.pow((totalBlocksRemoved + totalLines), 2) * 150;
+        document.getElementById('score-board').innerText = "SCORE: " + score;
+
+        for(let y=0; y<SIZE; y++) {
+            for(let x=0; x<SIZE; x++) {
+                if(mask[y][x] === 1) arena[y][x] = 0;
+            }
+        }
+    }
+}
+
+function checkGameOver() {
+    if (dockPieces.every(p => p === null)) return;
+    for (let i = 0; i < 3; i++) {
+        const piece = dockPieces[i];
+        if (!piece) continue;
+        for (let y = 0; y < SIZE; y++) {
+            for (let x = 0; x < SIZE; x++) {
+                if (canPlace(piece.matrix, x, y)) return; 
+            }
+        }
+    }
+    alert("遊戲結束！輸送帶擠滿了。\n最終得分: " + score);
+    arena = Array.from({length: SIZE}, () => Array(SIZE).fill(0));
+    score = 0;
+    document.getElementById('score-board').innerText = "SCORE: " + score;
+    generateDockPieces();
+    drawBoard();
+}
+
+let draggedIndex = null;
+let isDragging = false;
+let dragOffsetX = 0;
+let dragOffsetY = 0;
+
+dockCanvases.forEach((canvas, index) => {
+    canvas.addEventListener('mousedown', (e) => {
+        if (!dockPieces[index]) return;
+        draggedIndex = index;
+        isDragging = true;
+        const rect = canvas.getBoundingClientRect();
+        dragOffsetX = e.clientX - rect.left;
+        dragOffsetY = e.clientY - rect.top;
+    });
+});
+
+window.addEventListener('mousemove', (e) => {
+    if (!isDragging || draggedIndex === null) return;
+    const boardRect = boardCanvas.getBoundingClientRect();
+    const mouseOnBoardX = e.clientX - boardRect.left;
+    const mouseOnBoardY = e.clientY - boardRect.top;
+    const piece = dockPieces[draggedIndex];
+    
+    const gridX = Math.round((mouseOnBoardX - dragOffsetX / 2) / GRID_SIZE);
+    const gridY = Math.round((mouseOnBoardY - dragOffsetY / 2) / GRID_SIZE);
+
+    drawBoard();
+    if (gridX >= -2 && gridX < SIZE && gridY >= -2 && gridY < SIZE) {
+        if (canPlace(piece.matrix, gridX, gridY)) {
+            boardCtx.fillStyle = colors[piece.color] + "40"; 
+            piece.matrix.forEach((row, y) => {
+                row.forEach((val, x) => {
+                    if (val !== 0) {
+                        boardCtx.fillRect((gridX + x) * GRID_SIZE + 1, (gridY + y) * GRID_SIZE + 1, GRID_SIZE - 2, GRID_SIZE - 2);
+                    }
+                });
+            });
+        }
+    }
+});
+
+window.addEventListener('mouseup', (e) => {
+    if (!isDragging || draggedIndex === null) return;
+    isDragging = false;
+
+    const boardRect = boardCanvas.getBoundingClientRect();
+    const mouseOnBoardX = e.clientX - boardRect.left;
+    const mouseOnBoardY = e.clientY - boardRect.top;
+
+    const piece = dockPieces[draggedIndex];
+    const gridX = Math.round((mouseOnBoardX - dragOffsetX / 2) / GRID_SIZE);
+    const gridY = Math.round((mouseOnBoardY - dragOffsetY / 2) / GRID_SIZE);
+
+    if (canPlace(piece.matrix, gridX, gridY)) {
+        piece.matrix.forEach((row, y) => {
+            row.forEach((val, x) => {
+                if (val !== 0) {
+                    arena[gridY + y][gridX + x] = piece.color;
+                }
+            });
+        });
+
+        dockPieces[draggedIndex] = null;
+        drawDockPiece(draggedIndex);
+        shiftConveyor();
+        checkLines();
+        if (dockPieces.every(p => p === null)) {
+            generateDockPieces();
+        }
+        checkGameOver();
+    }
+    drawBoard();
+    draggedIndex = null;
+});
+
+generateDockPieces();
+drawBoard();
+</script>
+</body>
+</html>
